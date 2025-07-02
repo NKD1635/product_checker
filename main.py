@@ -10,8 +10,8 @@ import re
 SEARCH_KEYWORD = "Nintendo Switch 2"
 
 # 2. 検索したい価格帯を設定
-MIN_PRICE = 50000
-MAX_PRICE = 100000
+MIN_PRICE = 45000
+MAX_PRICE = 58000
 
 
 # --- プログラム本体（ここから下は変更不要） ---
