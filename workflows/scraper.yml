@@ -1,0 +1,35 @@
+name: Product Scraper
+
+on:
+  schedule:
+    # 以下の cron の値を変更すると実行間隔を調整できます。
+    # (UTC時刻なので、日本時間より9時間遅れます)
+    #
+    # --- 設定例 ---
+    # '*/5 * * * *'  # 5分ごと（高頻度。自己責任で）
+    # '0 * * * *'    # 1時間ごと（おすすめ）
+    # '0 0 * * *'    # 1日ごと（日本時間の午前9時）
+    - cron: '*/5 * * * *' # 現在は1時間ごとの設定
+    
+  workflow_dispatch: # Actionsタブから手動で実行するための設定
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: pip install requests beautifulsoup4
+
+      - name: Run scraper script
+        env:
+          # GitHubのSecretsに登録したアクセストークンを読み込みます
+          CHANNEL_ACCESS_TOKEN: ${{ secrets.CHANNEL_ACCESS_TOKEN }}
+        run: python main.py
