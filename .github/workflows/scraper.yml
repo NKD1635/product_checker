@@ -13,6 +13,7 @@ on:
     
   workflow_dispatch: # Actionsタブから手動で実行するための設定
 
+
 jobs:
   scrape:
     runs-on: ubuntu-latest
@@ -20,16 +21,21 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # Pythonのセットアップ
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
 
+      # Google Chromeブラウザのインストール
+      - name: Setup Chrome
+        uses: browser-actions/setup-chrome@latest
+
+      # Pythonライブラリのインストール（seleniumを追加）
       - name: Install dependencies
-        run: pip install requests beautifulsoup4
+        run: pip install requests beautifulsoup4 selenium
 
       - name: Run scraper script
         env:
-          # GitHubのSecretsに登録したアクセストークンを読み込みます
           CHANNEL_ACCESS_TOKEN: ${{ secrets.CHANNEL_ACCESS_TOKEN }}
         run: python main.py
