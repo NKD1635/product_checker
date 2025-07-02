@@ -5,13 +5,19 @@ from bs4 import BeautifulSoup
 from datetime import datetime, timezone, timedelta
 import re
 from urllib.parse import quote_plus
+import time
+
+# Seleniumライブラリのインポート
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
 
 # --- ★設定項目★ ---
-SEARCH_KEYWORD = "Switch"
+SEARCH_KEYWORD = "Nintendo Switch"
 MIN_PRICE = 100
 MAX_PRICE = 100000
 
-# --- プログラム本体（変更不要） ---
+# --- プログラム本体 ---
 JST = timezone(timedelta(hours=+9), 'JST')
 
 def send_line_message(message):
@@ -29,119 +35,83 @@ def send_line_message(message):
     except requests.exceptions.RequestException as e:
         print(f"LINEへのメッセージ送信に失敗しました: {e.response.text}")
 
-def check_site(shop_name, url, item_selector, logic_function):
+def get_selenium_driver():
+    """SeleniumのWebDriverをセットアップして返す"""
+    options = Options()
+    options.add_argument("--headless")  # ブラウザ画面を表示しない
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36")
+    driver = webdriver.Chrome(options=options)
+    return driver
+
+def check_site_with_selenium(driver, shop_name, url, item_selector, logic_function):
+    """Seleniumでサイトを検索し、条件に合う商品情報のリストを返す"""
     print(f"【{shop_name}】をチェック中...")
     found_items = []
     try:
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36", "Accept-Language": "ja-JP,ja;q=0.9"}
-        res = requests.get(url, headers=headers)
-        res.raise_for_status()
-        soup = BeautifulSoup(res.text, 'html.parser')
+        driver.get(url)
+        # JavaScriptが読み込まれるのを待つ（3秒）
+        time.sleep(3)
+        soup = BeautifulSoup(driver.page_source, 'html.parser')
+        
         items = soup.select(item_selector)
         print(f"  -> {len(items)}件の商品候補を検出。")
-        if not items:
-            print("  -> 警告: 商品候補が見つかりませんでした。")
         for i, item in enumerate(items):
             print(f"    - {i+1}番目の商品を解析中...")
             found_info = logic_function(item)
             if found_info:
                 found_info['shop'] = shop_name
                 found_items.append(found_info)
-    except requests.exceptions.RequestException as e:
-        print(f"  -> HTTPエラーが発生しました: {e}")
     except Exception as e:
-        print(f"  -> その他のエラーが発生しました: {e}")
+        print(f"  -> エラーが発生しました: {e}")
     print(f"【{shop_name}】のチェック完了。{len(found_items)}件の有効な商品を発見。")
     return found_items
 
+# --- 各サイトの在庫チェックロジック ---
 def get_price_from_text(text):
     if not text: return 0
     price_str = re.sub(r'\D', '', text)
     return int(price_str) if price_str else 0
 
-# --- 各サイトの在庫チェックロジック（再修正版） ---
-
-def rakuten_check(item):
-    # 「在庫あり」または「予約受付中」のステータスを持つか確認
-    status_tag = item.select_one(".inventory_info")
-    if status_tag and ("在庫あり" in status_tag.text or "予約受付中" in status_tag.text):
-        price_tag = item.select_one(".price_txt")
-        if price_tag:
-            price = get_price_from_text(price_tag.select_one("em").text)
-            print(f"      -> 価格: {price}円")
-            if MIN_PRICE <= price <= MAX_PRICE:
-                link_tag = item.select_one(".title a")
-                if link_tag and link_tag.get('href'):
-                    return {'url': link_tag.get('href'), 'price': price}
-    return None
-
-def dshopping_check(item):
-    if not item.select_one(".c-status--soldout"):
-        price_tag = item.select_one(".m-list-items_price")
-        if price_tag:
-            price = get_price_from_text(price_tag.text)
-            print(f"      -> 価格: {price}円")
-            if MIN_PRICE <= price <= MAX_PRICE:
-                link_tag = item.select_one(".m-list-items_link")
-                if link_tag and link_tag.get('href'):
-                    return {'url': "https://shopping.dmkt-sp.jp" + link_tag.get('href'), 'price': price}
-    return None
-
 def mercari_check(item):
-    # メルカリは特に構造が変わりやすいため、より慎重にチェック
     price_tag = item.select_one('[data-testid="price"]')
     if price_tag:
         price = get_price_from_text(price_tag.text)
         print(f"      -> 価格: {price}円")
         if MIN_PRICE <= price <= MAX_PRICE:
-            # 商品が売り切れ（SOLD）でないか確認
             if not item.select_one('[data-testid="thumbnail-sold-out-overlay"]'):
-                 # item自身がリンクになっていることが多い
-                url = item.get('href')
-                if url:
-                    # 相対パスを絶対パスに変換
-                    if url.startswith('/'):
-                        url = "https://jp.mercari.com" + url
+                url_tag = item.select_one('a')
+                if url_tag and url_tag.get('href'):
+                    url = url_tag.get('href')
+                    if url.startswith('/'): url = "https://jp.mercari.com" + url
                     return {'url': url, 'price': price}
+    else:
+        print("      -> 価格タグが見つかりません")
     return None
 
 if __name__ == "__main__":
     encoded_keyword = quote_plus(SEARCH_KEYWORD, encoding='utf-8')
     all_found_items = []
-    shops_to_check = [
-        # {
-        #     "name": "Amazon",
-        #     "url": f"https://www.amazon.co.jp/s?k={encoded_keyword}",
-        #     "item_selector": "div[data-component-type='s-search-result']",
-        #     "logic": amazon_check # Amazonはブロックされるため、デフォルトで無効
-        # },
-        {
-            "name": "楽天ブックス",
-            "url": f"https://books.rakuten.co.jp/search/dt?sitem={encoded_keyword}&sv=30",
-            "item_selector": ".search-result-item",
-            "logic": rakuten_check
-        },
-        {
-            "name": "dショッピング",
-            "url": f"https://shopping.dmkt-sp.jp/search?keyword={encoded_keyword}",
-            "item_selector": "li.m-list-items_item",
-            "logic": dshopping_check
-        },
-        {
-            "name": "メルカリ",
-            "url": f"https://jp.mercari.com/search?keyword={encoded_keyword}",
-            "item_selector": 'a[data-testid="mercari-item-object"]',
-            "logic": mercari_check
-        },
-    ]
-    for shop in shops_to_check:
-        results = check_site(shop["name"], shop["url"], shop["item_selector"], shop["logic"])
+    
+    # チェックするショップごとにブラウザを起動・終了する
+    # (メルカリに特化)
+    mercari_url = f"https://jp.mercari.com/search?keyword={encoded_keyword}"
+    mercari_selector = '[data-testid="item-cell"]'
+    
+    driver = get_selenium_driver()
+    try:
+        results = check_site_with_selenium(driver, "メルカリ", mercari_url, mercari_selector, mercari_check)
         all_found_items.extend(results)
-        
+    finally:
+        driver.quit()
+
     if all_found_items:
         all_found_items.sort(key=lambda x: x['price'])
-        total_count = len(all_found_items)
+        # (通知メッセージの作成と送信ロジックは省略)
         message = f"「{SEARCH_KEYWORD}」の販売を検知しました！\n"
+        # ... 以下、前回のコードと同じ通知部分 ...
+        total_count = len(all_found_items)
         if total_count > 5:
             message += f"（全{total_count}件中、価格が安い5件を表示）\n"
             items_to_show = all_found_items[:5]
