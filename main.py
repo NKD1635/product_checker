@@ -4,15 +4,15 @@ import json
 from bs4 import BeautifulSoup
 from datetime import datetime, timezone, timedelta
 import re
-from urllib.parse import quote_plus # URLエンコード用
+from urllib.parse import quote_plus
 
 # --- ★設定項目★ ---
 # 1. 検索したい商品名（キーワード）を設定
-SEARCH_KEYWORD = "Nintendo Switch 2"
+SEARCH_KEYWORD = "Nintendo Switch2"
 
 # 2. 検索したい価格帯を設定
-MIN_PRICE = 45000
-MAX_PRICE = 70000
+MIN_PRICE = 40000
+MAX_PRICE = 100000
 
 
 # --- プログラム本体（ここから下は変更不要） ---
@@ -42,10 +42,10 @@ def send_line_message(message):
 
 
 def check_site(shop_name, url, item_selector, logic_function):
-    """指定されたサイトを検索し、在庫があれば通知"""
+    """指定されたサイトを検索し、条件に合う商品情報のリストを返す"""
     print(f"【{shop_name}】をチェック中...")
+    found_items = []
     try:
-        # ユーザーエージェントを偽装してアクセス
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
         }
@@ -58,37 +58,25 @@ def check_site(shop_name, url, item_selector, logic_function):
         for item in items:
             found_info = logic_function(item)
             if found_info:
-                print(f"  -> 条件に合う在庫を発見！ 価格: {found_info['price']}円")
-                detection_time = datetime.now(JST).strftime('%Y/%m/%d %H:%M:%S')
-                
-                message = (
-                    f"{SEARCH_KEYWORD}の販売を検知しました！\n\n"
-                    f"価格: {found_info['price']:,}円\n"
-                    f"URL: {found_info['url']}\n"
-                    f"検知時刻: {detection_time}"
-                )
-                
-                send_line_message(message)
-                return True
+                # ショップ名も情報に追加
+                found_info['shop'] = shop_name
+                found_items.append(found_info)
     except Exception as e:
         print(f"  -> エラーが発生しました: {e}")
     
-    print(f"  -> 条件に合う在庫なし")
-    return False
+    print(f"【{shop_name}】のチェック完了。{len(found_items)}件の有効な商品を発見。")
+    return found_items
 
 # --- 各サイトの在庫チェックロジック ---
 
 def get_price_from_text(text):
     """文字列から数値（価格）のみを抽出する"""
+    if not text: return 0
     price_str = re.sub(r'\D', '', text)
     return int(price_str) if price_str else 0
 
 def amazon_check(item):
-    """Amazonのアイテムをチェック"""
-    # スポンサープロダクトを除外
-    if item.select_one('[data-component-type="sp-sponsored-result"]'):
-        return None
-        
+    if item.select_one('[data-component-type="sp-sponsored-result"]'): return None
     price_tag = item.select_one('.a-price-whole')
     if price_tag:
         price = get_price_from_text(price_tag.text)
@@ -99,7 +87,6 @@ def amazon_check(item):
     return None
 
 def rakuten_check(item):
-    """楽天ブックスのアイテムをチェック"""
     if not item.select_one(".rb-item-list__item__cart--unavailable"):
         price_tag = item.select_one(".rb-item-list__item__price, .price-box .price")
         if price_tag:
@@ -111,8 +98,6 @@ def rakuten_check(item):
     return None
 
 def dshopping_check(item):
-    """dショッピングのアイテムをチェック"""
-    # 「在庫なし」の表示がないか確認
     if not item.select_one(".item-preorder-information, .c-icon--stock-none"):
         price_tag = item.select_one(".product-list-item-price-value")
         if price_tag:
@@ -124,10 +109,9 @@ def dshopping_check(item):
     return None
 
 def mercari_check(item):
-    """メルカリのアイテムをチェック"""
-    price_tag = item.select_one('mer-price, .price')
+    price_tag = item.select_one('mer-price')
     if price_tag:
-        price_text = price_tag.get('price', price_tag.text)
+        price_text = price_tag.get('price', "0")
         price = get_price_from_text(price_text)
         if MIN_PRICE <= price <= MAX_PRICE:
             link_tag = item.select_one("a")
@@ -137,10 +121,7 @@ def mercari_check(item):
 
 
 if __name__ == "__main__":
-    # キーワードをURL用にエンコード
     encoded_keyword = quote_plus(SEARCH_KEYWORD)
-
-    # チェックするショップのリスト
     shops_to_check = [
         {
             "name": "Amazon",
@@ -168,6 +149,37 @@ if __name__ == "__main__":
         },
     ]
 
+    all_found_items = []
+    # すべてのショップをチェックして結果をリストにまとめる
     for shop in shops_to_check:
-        if check_site(shop["name"], shop["url"], shop["item_selector"], shop["logic"]):
-            break
+        results = check_site(shop["name"], shop["url"], shop["item_selector"], shop["logic"])
+        all_found_items.extend(results)
+
+    # 見つかった商品が1件でもあれば処理
+    if all_found_items:
+        # 価格が安い順に並び替え
+        all_found_items.sort(key=lambda x: x['price'])
+        
+        total_count = len(all_found_items)
+        message = f"{SEARCH_KEYWORD}の販売を検知しました！\n"
+
+        # 5件以上あればメッセージを追加
+        if total_count > 5:
+            message += f"（全{total_count}件中、価格が安い5件を表示）\n"
+            items_to_show = all_found_items[:5] # 先頭から5件を取得
+        else:
+            items_to_show = all_found_items
+
+        # 通知メッセージを作成
+        for i, item in enumerate(items_to_show):
+            message += (
+                f"\n【{i+1}】価格: {item['price']:,}円\n"
+                f"URL: {item['url']}\n"
+            )
+        
+        detection_time = datetime.now(JST).strftime('%Y/%m/%d %H:%M:%S')
+        message += f"\n検知時刻: {detection_time}"
+
+        send_line_message(message)
+    else:
+        print("最終結果: 条件に合う商品は見つかりませんでした。")
